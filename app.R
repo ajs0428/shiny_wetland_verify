@@ -222,8 +222,10 @@ ui <- fluidPage(
           textOutput("patch_status")
         ),
 
-        # Toggle overlay
+        # Overlay controls
         checkboxInput("show_overlay", "Show Classification Overlay", value = TRUE),
+        sliderInput("overlay_opacity", "Overlay Opacity:", min = 0, max = 1,
+                    value = 0.7, step = 0.1, width = "100%"),
 
         hr(),
 
@@ -446,14 +448,29 @@ server <- function(input, output, session) {
   # Leaflet map
   output$map <- renderLeaflet({
     leaflet() %>%
-      addProviderTiles(providers$Esri.WorldImagery, group = "Satellite") %>%
+      addProviderTiles(providers$Esri.WorldImagery, group = "ESRI World Imagery") %>%
+      addTiles(
+        urlTemplate = "https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}",
+        attribution = "Google",
+        group = "Google Satellite"
+      ) %>%
+      addTiles(
+        urlTemplate = "https://gis.apfo.usda.gov/arcgis/rest/services/NAIP/USDA_CONUS_PRIME/ImageServer/tile/{z}/{y}/{x}",
+        attribution = "USDA NAIP",
+        group = "NAIP"
+      ) %>%
+      addLayersControl(
+        baseGroups = c("ESRI World Imagery", "Google Satellite", "NAIP"),
+        options = layersControlOptions(collapsed = FALSE)
+      ) %>%
       setView(lng = -85, lat = 45, zoom = 5)
   })
 
-  # Update map when raster changes or overlay toggled
+  # Update map when raster changes, overlay toggled, or opacity adjusted
   observe({
     raster_data <- rv$current_raster
     show_overlay <- input$show_overlay
+    opacity <- input$overlay_opacity
 
     req(raster_data)
 
@@ -481,7 +498,6 @@ server <- function(input, output, session) {
 
     leafletProxy("map") %>%
       clearImages() %>%
-      clearControls() %>%
       fitBounds(
         lng1 = bounds[1],
         lat1 = bounds[3],
@@ -490,15 +506,11 @@ server <- function(input, output, session) {
       )
 
     if (show_overlay) {
-      # Write temp file for leaflet
-      temp_file <- tempfile(fileext = ".tif")
-      writeRaster(raster_data, temp_file, overwrite = TRUE)
-
       leafletProxy("map") %>%
         addRasterImage(
           raster_data,
           colors = pal,
-          opacity = 0.7,
+          opacity = opacity,
           project = FALSE
         )
     }
