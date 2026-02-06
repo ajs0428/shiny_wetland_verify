@@ -1,0 +1,13 @@
+# Data files
+Data/R_Patches/
+Data/review_log*.csv
+
+# R session files
+.Rhistory
+.Rdata
+.RData
+.Ruserdata
+.Rproj.user/
+
+# macOS
+.DS_Store
