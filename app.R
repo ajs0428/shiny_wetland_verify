@@ -15,14 +15,16 @@ CLASS_COLORS <- c(
   "0" = "#00FFFF",  # EMW (Emergent) - Cyan
   "1" = "#006400",  # FSW (Forested) - Dark Green
   "2" = "#0000FF",  # OWW (Open Water) - Blue
-  "3" = "#FFA500"   # SSW (Shrub-Scrub) - Orange
+  "3" = "#FFA500",  # SSW (Shrub-Scrub) - Orange
+  "4" = "#808080"   # UPL (Upland) - Gray
 )
 
 CLASS_LABELS <- c(
   "0" = "EMW (Emergent Wetland)",
   "1" = "FSW (Forested Wetland)",
   "2" = "OWW (Open Water Wetland)",
-  "3" = "SSW (Shrub-Scrub Wetland)"
+  "3" = "SSW (Shrub-Scrub Wetland)",
+  "4" = "UPL (Upland)"
 )
 
 # --- Helper Functions ---
@@ -136,18 +138,27 @@ ui <- fluidPage(
       .btn-valid {
         background-color: #28a745;
         color: white;
-        width: 48%;
+        width: 31%;
         margin-right: 2%;
       }
       .btn-valid:hover {
         background-color: #218838;
         color: white;
       }
+      .btn-uncertain {
+        background-color: #ffc107;
+        color: #212529;
+        width: 31%;
+        margin-right: 2%;
+      }
+      .btn-uncertain:hover {
+        background-color: #e0a800;
+        color: #212529;
+      }
       .btn-invalid {
         background-color: #dc3545;
         color: white;
-        width: 48%;
-        margin-left: 2%;
+        width: 31%;
       }
       .btn-invalid:hover {
         background-color: #c82333;
@@ -222,6 +233,11 @@ ui <- fluidPage(
           textOutput("patch_status")
         ),
 
+        # Basemap selection
+        radioButtons("basemap", "Basemap:",
+                     choices = c("ESRI World Imagery", "Google Satellite", "NAIP"),
+                     selected = "ESRI World Imagery", inline = FALSE),
+
         # Overlay controls
         checkboxInput("show_overlay", "Show Classification Overlay", value = TRUE),
         sliderInput("overlay_opacity", "Overlay Opacity:", min = 0, max = 1,
@@ -237,6 +253,7 @@ ui <- fluidPage(
         h5("Mark Patch As:"),
         div(style = "display: flex; margin-bottom: 15px;",
           actionButton("btn_valid", "Valid", class = "btn-valid"),
+          actionButton("btn_uncertain", "Uncertain", class = "btn-uncertain"),
           actionButton("btn_invalid", "Invalid", class = "btn-invalid")
         ),
 
@@ -272,6 +289,10 @@ ui <- fluidPage(
           div(class = "legend-item",
             div(class = "legend-color", style = "background-color: #FFA500;"),
             span("SSW (Shrub-Scrub)")
+          ),
+          div(class = "legend-item",
+            div(class = "legend-color", style = "background-color: #808080;"),
+            span("UPL (Upland)")
           )
         )
       )
@@ -448,29 +469,35 @@ server <- function(input, output, session) {
   # Leaflet map
   output$map <- renderLeaflet({
     leaflet() %>%
-      addProviderTiles(providers$Esri.WorldImagery, group = "ESRI World Imagery") %>%
-      addTiles(
-        urlTemplate = "https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}",
-        attribution = "Google",
-        group = "Google Satellite"
-      ) %>%
-      addTiles(
-        urlTemplate = "https://gis.apfo.usda.gov/arcgis/rest/services/NAIP/USDA_CONUS_PRIME/ImageServer/tile/{z}/{y}/{x}",
-        attribution = "USDA NAIP",
-        group = "NAIP"
-      ) %>%
-      addLayersControl(
-        baseGroups = c("ESRI World Imagery", "Google Satellite", "NAIP"),
-        options = layersControlOptions(collapsed = FALSE)
-      ) %>%
+      addProviderTiles(providers$Esri.WorldImagery) %>%
       setView(lng = -85, lat = 45, zoom = 5)
   })
 
-  # Update map when raster changes, overlay toggled, or opacity adjusted
+  # Switch basemap when selection changes
+  observeEvent(input$basemap, {
+    proxy <- leafletProxy("map") %>% clearTiles()
+
+    if (input$basemap == "ESRI World Imagery") {
+      proxy %>% addProviderTiles(providers$Esri.WorldImagery)
+    } else if (input$basemap == "Google Satellite") {
+      proxy %>% addTiles(
+        urlTemplate = "https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}",
+        attribution = "Google"
+      )
+    } else if (input$basemap == "NAIP") {
+      proxy %>% addTiles(
+        urlTemplate = "https://gis.apfo.usda.gov/arcgis/rest/services/NAIP/USDA_CONUS_PRIME/ImageServer/tile/{z}/{y}/{x}",
+        attribution = "USDA NAIP"
+      )
+    }
+  }, ignoreInit = TRUE)
+
+  # Update map when raster changes, overlay toggled, opacity adjusted, or basemap switched
   observe({
     raster_data <- rv$current_raster
     show_overlay <- input$show_overlay
     opacity <- input$overlay_opacity
+    basemap <- input$basemap  # re-render overlay after basemap switch
 
     req(raster_data)
 
@@ -498,11 +525,21 @@ server <- function(input, output, session) {
 
     leafletProxy("map") %>%
       clearImages() %>%
+      clearShapes() %>%
       fitBounds(
         lng1 = bounds[1],
         lat1 = bounds[3],
         lng2 = bounds[2],
         lat2 = bounds[4]
+      ) %>%
+      addRectangles(
+        lng1 = bounds[1],
+        lat1 = bounds[3],
+        lng2 = bounds[2],
+        lat2 = bounds[4],
+        color = "#FF0000",
+        weight = 2,
+        fillOpacity = 0
       )
 
     if (show_overlay) {
@@ -563,6 +600,14 @@ server <- function(input, output, session) {
     req(patch)
 
     log_review(patch, "valid")
+  })
+
+  # Mark as Uncertain
+  observeEvent(input$btn_uncertain, {
+    patch <- current_patch()
+    req(patch)
+
+    log_review(patch, "uncertain")
   })
 
   # Mark as Invalid
