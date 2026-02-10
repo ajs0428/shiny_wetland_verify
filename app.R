@@ -7,7 +7,7 @@ library(terra)
 library(sf)
 
 # --- Configuration ---
-PATCHES_DIR <- "Data/R_Patches"
+PATCHES_DIR <- "Data/R_Patches_Labels"
 REVIEW_LOG_DIR <- "Data"
 
 # MOD_CLASS color palette
@@ -235,7 +235,7 @@ ui <- fluidPage(
 
         # Basemap selection
         radioButtons("basemap", "Basemap:",
-                     choices = c("ESRI World Imagery", "Google Satellite", "NAIP"),
+                     choices = c("ESRI World Imagery", "NYS Hillshade", "NAIP"),
                      selected = "ESRI World Imagery", inline = FALSE),
 
         # Overlay controls
@@ -479,10 +479,10 @@ server <- function(input, output, session) {
 
     if (input$basemap == "ESRI World Imagery") {
       proxy %>% addProviderTiles(providers$Esri.WorldImagery)
-    } else if (input$basemap == "Google Satellite") {
+    } else if (input$basemap == "NYS Hillshade") {
       proxy %>% addTiles(
-        urlTemplate = "https://mt1.google.com/vt/lyrs=s&x={x}&y={y}&z={z}",
-        attribution = "Google"
+        urlTemplate = "https://elevation.its.ny.gov/arcgis/rest/services/NYS_Statewide_Hillshade/MapServer/tile/{z}/{y}/{x}",
+        attribution = "NYS ITS GIS"
       )
     } else if (input$basemap == "NAIP") {
       proxy %>% addTiles(
