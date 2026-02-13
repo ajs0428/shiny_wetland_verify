@@ -1,6 +1,6 @@
 # Data files
 Data/R_Patches/
-Data/review_log*.csv
+
 
 # R session files
 .Rhistory

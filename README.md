@@ -60,15 +60,60 @@ The app will open in your default browser.
 
 ## Multi-Reviewer Workflow
 
-Each reviewer gets their own log file, saved automatically as `Data/review_log_<name>.csv`. This avoids conflicts when multiple people review patches from a shared folder.
+Each reviewer gets their own log file, saved automatically as `Data/review_log_<name>.csv`. This avoids conflicts when multiple people review the same patches.
 
-To collaborate:
+### Getting Started (Reviewers)
 
-1. Share the project folder (e.g., via a network drive, OneDrive, or Google Drive).
-2. Each reviewer runs the app locally and enters their own name.
-3. Review logs are saved separately and can be merged later.
+1. **Clone the repository:**
 
-To start a fresh review, simply delete your `review_log_<name>.csv` file from the `Data/` directory. The app will create a new one automatically.
+   ```bash
+   git clone <repo-url>
+   cd shiny_wetland_verify
+   ```
+
+2. **Install R packages** (one-time setup):
+
+   ```r
+   install.packages(c("shiny", "leaflet", "terra", "sf", "stringr"))
+   ```
+
+3. **Run the app:**
+
+   ```r
+   shiny::runApp()
+   ```
+
+4. **Enter your name** in the Reviewer Name field. Use a consistent, unique name (e.g., your initials) — this determines your log filename. **Important:** Use the exact same name every session. If your name changes (e.g., "Alice" vs "alice"), the app will create a separate log file and your previous progress won't carry over.
+
+5. **Review patches.** The app auto-saves your progress to `Data/review_log_<name>.csv` after each decision.
+
+### Submitting Your Reviews
+
+When you've finished a batch of reviews, push your log file back to the repository:
+
+```bash
+git add Data/review_log_<name>.csv
+git commit -m "Add review log for <name>"
+git push
+```
+
+### Pulling Updates
+
+If new patches are added or you want to see others' progress:
+
+```bash
+git pull
+```
+
+Since each reviewer has a separate CSV file, there should be no merge conflicts.
+
+### Resuming Work
+
+The app automatically detects your existing review log when you enter your name and jumps to the first unreviewed patch. Just `git pull` to get any new patches, then run the app.
+
+### Starting Fresh
+
+To start a fresh review, delete your `review_log_<name>.csv` file from the `Data/` directory. The app will create a new one automatically.
 
 ## Review Log Format
 
@@ -80,7 +125,7 @@ The exported CSV contains the following columns:
 | `cluster`    | Cluster number                       |
 | `huc`        | HUC code                             |
 | `patch_num`  | Patch number within the cluster/HUC  |
-| `status`     | `valid` or `invalid`                 |
+| `status`     | `valid`, `uncertain`, or `invalid`   |
 | `comment`    | Optional reviewer comments           |
 | `reviewer`   | Name of the reviewer                 |
 | `timestamp`  | Date and time of the review          |

@@ -5,6 +5,7 @@ library(shiny)
 library(leaflet)
 library(terra)
 library(sf)
+library(stringr)
 
 # --- Configuration ---
 PATCHES_DIR <- "Data/R_Patches_Labels"
@@ -34,10 +35,10 @@ parse_patch_filename <- function(filename) {
   # Pattern: cluster_<NUM>_huc_<CODE>_patch_<NUM>.tif
   pattern <- "cluster_(\\d+)_huc_(\\d+)_patch_(\\d+)\\.tif"
   matches <- regmatches(filename, regexec(pattern, filename))[[1]]
-
   if (length(matches) == 4) {
     list(
       file = filename,
+      name = str_remove(filename, "labels_only_"),
       cluster = as.integer(matches[2]),
       huc = matches[3],
       patch_num = as.integer(matches[4])
@@ -57,6 +58,7 @@ scan_patches <- function(dir_path) {
   if (length(patch_list) == 0) {
     return(data.frame(
       file = character(),
+      name = character(),
       cluster = integer(),
       huc = character(),
       patch_num = integer(),
@@ -353,7 +355,7 @@ server <- function(input, output, session) {
     # Auto-resume: jump to first unreviewed patch
     if (!is.null(rv$all_patches) && nrow(rv$all_patches) > 0) {
       reviewed_files <- rv$review_log$patch_file
-      unreviewed_idx <- which(!rv$all_patches$file %in% reviewed_files)
+      unreviewed_idx <- which(!rv$all_patches$name %in% reviewed_files)
 
       if (length(unreviewed_idx) > 0) {
         rv$current_index <- unreviewed_idx[1]
@@ -424,7 +426,7 @@ server <- function(input, output, session) {
   output$patch_name <- renderText({
     patch <- current_patch()
     if (is.null(patch)) return("No patches found")
-    paste("File:", patch$file)
+    paste("File:", patch$name)
   })
 
   output$patch_cluster <- renderText({
@@ -443,7 +445,7 @@ server <- function(input, output, session) {
     patch <- current_patch()
     req(patch, rv$review_log)
 
-    status_row <- rv$review_log[rv$review_log$patch_file == patch$file, ]
+    status_row <- rv$review_log[rv$review_log$patch_file == patch$name, ]
 
     if (nrow(status_row) > 0) {
       paste("Status:", toupper(status_row$status[1]))
@@ -457,7 +459,7 @@ server <- function(input, output, session) {
     patch <- current_patch()
     req(patch, rv$review_log)
 
-    existing <- rv$review_log[rv$review_log$patch_file == patch$file, ]
+    existing <- rv$review_log[rv$review_log$patch_file == patch$name, ]
 
     if (nrow(existing) > 0 && !is.null(existing$comment[1]) && !is.na(existing$comment[1])) {
       updateTextAreaInput(session, "comment_box", value = existing$comment[1])
@@ -480,14 +482,16 @@ server <- function(input, output, session) {
     if (input$basemap == "ESRI World Imagery") {
       proxy %>% addProviderTiles(providers$Esri.WorldImagery)
     } else if (input$basemap == "NYS Hillshade") {
-      proxy %>% addTiles(
-        urlTemplate = "https://elevation.its.ny.gov/arcgis/rest/services/NYS_Statewide_Hillshade/MapServer/tile/{z}/{y}/{x}",
+      proxy %>% addWMSTiles(
+        baseUrl = "https://elevation.its.ny.gov/arcgis/services/NYS_Statewide_Hillshade/MapServer/WMSServer",
+        layers = "0,1,2",
+        options = WMSTileOptions(format = "image/png", transparent = FALSE),
         attribution = "NYS ITS GIS"
       )
     } else if (input$basemap == "NAIP") {
       proxy %>% addTiles(
-        urlTemplate = "https://gis.apfo.usda.gov/arcgis/rest/services/NAIP/USDA_CONUS_PRIME/ImageServer/tile/{z}/{y}/{x}",
-        attribution = "USDA NAIP"
+        urlTemplate = "https://naip.maptiles.arcgis.com/arcgis/rest/services/NAIP/MapServer/tile/{z}/{y}/{x}",
+        attribution = "USDA NAIP, Esri"
       )
     }
   }, ignoreInit = TRUE)
@@ -576,7 +580,7 @@ server <- function(input, output, session) {
     req(rv$filtered_patches, rv$review_log)
 
     reviewed_files <- rv$review_log$patch_file
-    unreviewed_idx <- which(!rv$filtered_patches$file %in% reviewed_files)
+    unreviewed_idx <- which(!rv$filtered_patches$name %in% reviewed_files)
 
     if (length(unreviewed_idx) > 0) {
       # Find next unreviewed from current position
@@ -627,10 +631,10 @@ server <- function(input, output, session) {
     }
 
     # Check if already reviewed
-    existing_idx <- which(rv$review_log$patch_file == patch$file)
+    existing_idx <- which(rv$review_log$patch_file == patch$name)
 
     new_entry <- data.frame(
-      patch_file = patch$file,
+      patch_file = patch$name,
       cluster = patch$cluster,
       huc = patch$huc,
       patch_num = patch$patch_num,
