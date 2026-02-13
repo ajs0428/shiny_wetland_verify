@@ -50,7 +50,10 @@ The app will open in your default browser.
 
 ## Usage
 
-1. **Enter your name or initials ** in the Reviewer Name field at the top of the sidebar. This is required before you can submit reviews. **Important make sure the name or initials are consistent each time you review so the review log can update correctly**
+1. **Enter your name or initials ** in the Reviewer Name field at the top of the sidebar. This is required before you can submit reviews.
+
+- **Important make sure the name or initials are consistent each time you review so the review log can update correctly**
+
 2. **Browse patches** using the Previous/Next buttons or jump ahead with "Jump to Next Unreviewed."
 3. **Toggle the classification overlay** on/off to compare the `MOD_CLASS` labels against the satellite imagery.
 4. **Filter by cluster or HUC** to focus on a specific subset of patches.
