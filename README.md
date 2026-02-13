@@ -5,12 +5,12 @@ R Shiny application for validating raster patches created as training data for a
 ## Requirements
 
 - R (>= 4.0)
-- R packages: `shiny`, `leaflet`, `terra`, `sf`
+- R packages: `shiny`, `leaflet`, `terra`, `sf` `stringr`
 
 Install the required packages:
 
 ```r
-install.packages(c("shiny", "leaflet", "terra", "sf"))
+install.packages(c("shiny", "leaflet", "terra", "sf", "stringr"))
 ```
 
 ## Data Setup
