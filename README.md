@@ -50,7 +50,7 @@ The app will open in your default browser.
 
 ## Usage
 
-1. **Enter your name or initials ** in the Reviewer Name field at the top of the sidebar. This is required before you can submit reviews.
+1. **Enter your name or initials** in the Reviewer Name field at the top of the sidebar. This is required before you can submit reviews.
 
 - **Important make sure the name or initials are consistent each time you review so the review log can update correctly**
 
