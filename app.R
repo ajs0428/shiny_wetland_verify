@@ -2,14 +2,18 @@
 # Validates deep learning training data for wetland classification
 
 library(shiny)
+library(shinyjs)
 library(leaflet)
+library(leafpm)
 library(terra)
 library(sf)
 library(stringr)
 
 # --- Configuration ---
-PATCHES_DIR <- "Data/R_Patches_Labels"
-REVIEW_LOG_DIR <- "Data"
+VECTOR_DIR         <- "Data/R_Patches_Vector"
+RASTER_DIR         <- "Data/R_Patches_Labels"
+ALTERED_VECTOR_DIR <- "Data/Altered_R_Patches_Vector"
+REVIEW_LOG_DIR     <- "Data"
 
 # MOD_CLASS color palette
 CLASS_COLORS <- c(
@@ -30,38 +34,64 @@ CLASS_LABELS <- c(
 
 # --- Helper Functions ---
 
-#' Parse patch filename to extract metadata
-parse_patch_filename <- function(filename) {
-  # Pattern: cluster_<NUM>_huc_<CODE>_patch_<NUM>.tif
-  pattern <- "cluster_(\\d+)_huc_(\\d+)_patch_(\\d+)\\.tif"
+#' Parse vector patch filename to extract metadata
+parse_vector_filename <- function(filename) {
+  pattern <- "NHP_cluster_(\\d+)_huc_(\\d+)_patch_(\\d+)\\.gpkg"
   matches <- regmatches(filename, regexec(pattern, filename))[[1]]
   if (length(matches) == 4) {
     list(
-      file = filename,
-      name = str_remove(filename, "labels_only_"),
-      cluster = as.integer(matches[2]),
-      huc = matches[3],
-      patch_num = as.integer(matches[4])
+      file_vector = filename,
+      cluster     = as.integer(matches[2]),
+      huc         = matches[3],
+      patch_num   = as.integer(matches[4])
     )
   } else {
     NULL
   }
 }
 
-#' Scan patches directory and build metadata dataframe
-scan_patches <- function(dir_path) {
-  files <- list.files(dir_path, pattern = "\\.tif$", full.names = FALSE)
+#' Find matching raster file for a given cluster/huc/patch_num
+#' Matches any filename ending in _cluster_<N>_huc_<CODE>_patch_<N>.tif
+find_raster_match <- function(cluster, huc, patch_num) {
+  pattern <- sprintf("_cluster_%d_huc_%s_patch_%d\\.tif$", cluster, huc, patch_num)
+  matches <- list.files(RASTER_DIR, pattern = pattern, full.names = TRUE)
+  if (length(matches) > 0) matches[1] else NULL
+}
 
-  patch_list <- lapply(files, parse_patch_filename)
+#' Scan vector patches directory; return only pairs with a matching raster
+scan_patches <- function(vector_dir, raster_dir) {
+  files <- list.files(vector_dir, pattern = "\\.gpkg$", full.names = FALSE)
+
+  patch_list <- lapply(files, parse_vector_filename)
   patch_list <- Filter(Negate(is.null), patch_list)
 
   if (length(patch_list) == 0) {
     return(data.frame(
-      file = character(),
-      name = character(),
-      cluster = integer(),
-      huc = character(),
-      patch_num = integer(),
+      file_vector = character(),
+      file_raster = character(),
+      cluster     = integer(),
+      huc         = character(),
+      patch_num   = integer(),
+      stringsAsFactors = FALSE
+    ))
+  }
+
+  # Add raster match; drop unpaired
+  patch_list <- lapply(patch_list, function(p) {
+    raster_path <- find_raster_match(p$cluster, p$huc, p$patch_num)
+    if (is.null(raster_path)) return(NULL)
+    p$file_raster <- basename(raster_path)
+    p
+  })
+  patch_list <- Filter(Negate(is.null), patch_list)
+
+  if (length(patch_list) == 0) {
+    return(data.frame(
+      file_vector = character(),
+      file_raster = character(),
+      cluster     = integer(),
+      huc         = character(),
+      patch_num   = integer(),
       stringsAsFactors = FALSE
     ))
   }
@@ -72,62 +102,62 @@ scan_patches <- function(dir_path) {
   df
 }
 
-#' Load review log or create empty one
+#' Load review log or create empty one with new schema
 load_review_log <- function(path) {
   if (file.exists(path)) {
     df <- read.csv(path, stringsAsFactors = FALSE)
-    if (!"comment" %in% names(df)) {
-      df$comment <- ""
+    # Ensure all expected columns exist
+    expected <- c("patch_file_vector", "cluster", "huc", "patch_num",
+                  "status", "altered", "confidence", "comment", "reviewer", "timestamp")
+    for (col in expected) {
+      if (!col %in% names(df)) df[[col]] <- NA
     }
-    if (!"reviewer" %in% names(df)) {
-      df$reviewer <- ""
-    }
-    df
+    df[, expected]
   } else {
     data.frame(
-      patch_file = character(),
-      cluster = integer(),
-      huc = character(),
-      patch_num = integer(),
-      status = character(),
-      comment = character(),
-      reviewer = character(),
-      timestamp = character(),
-      stringsAsFactors = FALSE
+      patch_file_vector = character(),
+      cluster           = integer(),
+      huc               = character(),
+      patch_num         = integer(),
+      status            = character(),
+      altered           = logical(),
+      confidence        = integer(),
+      comment           = character(),
+      reviewer          = character(),
+      timestamp         = character(),
+      stringsAsFactors  = FALSE
     )
   }
 }
 
 #' Save review log to CSV
 save_review_log <- function(log_df, path) {
-  # Ensure directory exists
   dir.create(dirname(path), showWarnings = FALSE, recursive = TRUE)
   write.csv(log_df, path, row.names = FALSE)
 }
 
-#' Load and process raster for display
+#' Load raster patch: extract MOD_CLASS band, reproject to WGS84
 load_patch_raster <- function(file_path) {
-  r <- rast(file_path)
-
-  # Find MOD_CLASS band
+  r          <- rast(file_path)
   band_names <- names(r)
-  mod_class_idx <- which(band_names == "MOD_CLASS")
+  idx        <- which(band_names == "MOD_CLASS")
+  if (length(idx) == 0) idx <- nlyr(r)
+  mod_class  <- r[[idx]]
+  project(mod_class, "EPSG:4326", method = "near")
+}
 
-  if (length(mod_class_idx) == 0) {
-    # Try last band if MOD_CLASS not found by name
-    mod_class_idx <- nlyr(r)
-  }
-
-  mod_class <- r[[mod_class_idx]]
-
-  # Reproject to WGS84 for Leaflet
-  mod_class_wgs84 <- project(mod_class, "EPSG:4326", method = "near")
-
-  mod_class_wgs84
+#' Load vector patch: return list with WGS84 sf and original CRS object
+load_patch_vector <- function(file_path) {
+  sf_obj   <- st_read(file_path, quiet = TRUE)
+  orig_crs <- st_crs(sf_obj)
+  sf_wgs84 <- st_transform(sf_obj, 4326)
+  list(sf_wgs84 = sf_wgs84, orig_crs = orig_crs)
 }
 
 # --- UI ---
 ui <- fluidPage(
+  useShinyjs(),
+
   tags$head(
     tags$style(HTML("
       .sidebar {
@@ -136,35 +166,6 @@ ui <- fluidPage(
         border-radius: 5px;
         height: calc(100vh - 40px);
         overflow-y: auto;
-      }
-      .btn-valid {
-        background-color: #28a745;
-        color: white;
-        width: 31%;
-        margin-right: 2%;
-      }
-      .btn-valid:hover {
-        background-color: #218838;
-        color: white;
-      }
-      .btn-uncertain {
-        background-color: #ffc107;
-        color: #212529;
-        width: 31%;
-        margin-right: 2%;
-      }
-      .btn-uncertain:hover {
-        background-color: #e0a800;
-        color: #212529;
-      }
-      .btn-invalid {
-        background-color: #dc3545;
-        color: white;
-        width: 31%;
-      }
-      .btn-invalid:hover {
-        background-color: #c82333;
-        color: white;
       }
       .nav-btn {
         width: 48%;
@@ -199,6 +200,23 @@ ui <- fluidPage(
         margin-right: 10px;
         border: 1px solid #333;
       }
+      #btn_submit {
+        margin-bottom: 15px;
+      }
+    ")),
+    # Custom JS: extract all current Leaflet.PM layers and send to Shiny
+    tags$script(HTML("
+      Shiny.addCustomMessageHandler('getFinalFeatures', function(msg) {
+        var leafletMap = HTMLWidgets.find('#map').getMap();
+        var features = [];
+        leafletMap.pm.getGeomanLayers().forEach(function(layer) {
+          features.push(layer.toGeoJSON());
+        });
+        Shiny.setInputValue('final_vector_geojson', JSON.stringify({
+          type: 'FeatureCollection',
+          features: features
+        }), {priority: 'event'});
+      });
     "))
   ),
 
@@ -241,23 +259,27 @@ ui <- fluidPage(
                      selected = "ESRI World Imagery", inline = FALSE),
 
         # Overlay controls
-        checkboxInput("show_overlay", "Show Classification Overlay", value = TRUE),
-        sliderInput("overlay_opacity", "Overlay Opacity:", min = 0, max = 1,
+        checkboxInput("show_raster", "Show Raster Classification Overlay", value = TRUE),
+        sliderInput("overlay_opacity", "Raster Opacity:", min = 0, max = 1,
                     value = 0.7, step = 0.1, width = "100%"),
+        checkboxInput("show_vector", "Show Vector Overlay", value = TRUE),
 
         hr(),
 
-        # Comments
+        # Confidence and comment
+        selectInput("confidence", "Confidence (1\u201310):",
+                    choices = c("Select..." = "", as.character(1:10)),
+                    selected = "", width = "100%"),
         textAreaInput("comment_box", "Comments (optional):", value = "", rows = 3,
                       width = "100%", placeholder = "Add notes about this patch..."),
 
-        # Valid/Invalid buttons
-        h5("Mark Patch As:"),
-        div(style = "display: flex; margin-bottom: 15px;",
-          actionButton("btn_valid", "Valid", class = "btn-valid"),
-          actionButton("btn_uncertain", "Uncertain", class = "btn-uncertain"),
-          actionButton("btn_invalid", "Invalid", class = "btn-invalid")
+        # Submit button — disabled until confidence is selected
+        disabled(
+          actionButton("btn_submit", "Submit Review",
+                       class = "btn-primary", style = "width: 100%;")
         ),
+
+        hr(),
 
         # Navigation
         h5("Navigation"),
@@ -312,14 +334,17 @@ server <- function(input, output, session) {
 
   # Reactive values
   rv <- reactiveValues(
-    all_patches = NULL,       # All patches metadata
-    filtered_patches = NULL,  # Filtered patches based on selections
-    current_index = 1,        # Current patch index in filtered list
-    review_log = NULL,        # Review log dataframe
-    current_raster = NULL     # Current loaded raster
+    all_patches          = NULL,   # paired patch metadata df
+    filtered_patches     = NULL,
+    current_index        = 1,
+    review_log           = NULL,
+    current_raster       = NULL,   # SpatRaster in WGS84
+    current_vector_wgs84 = NULL,   # sf in WGS84
+    vector_orig_crs      = NULL,   # CRS object of original vector projection
+    vector_altered       = FALSE   # TRUE if any PM edit event fired
   )
 
-  # Reactive path based on reviewer name
+  # Reactive review log file path based on reviewer name
   review_log_path <- reactive({
     req(input$reviewer_name, nchar(trimws(input$reviewer_name)) > 0)
     sanitized <- gsub("[^A-Za-z0-9_-]", "_", trimws(input$reviewer_name))
@@ -328,17 +353,14 @@ server <- function(input, output, session) {
 
   # Scan patches on startup
   observe({
-    rv$all_patches <- scan_patches(PATCHES_DIR)
+    rv$all_patches      <- scan_patches(VECTOR_DIR, RASTER_DIR)
     rv$filtered_patches <- rv$all_patches
 
     if (nrow(rv$all_patches) > 0) {
       clusters <- sort(unique(rv$all_patches$cluster))
-      hucs <- sort(unique(rv$all_patches$huc))
-
-      updateSelectInput(session, "filter_cluster",
-                        choices = c("All" = "", clusters))
-      updateSelectInput(session, "filter_huc",
-                        choices = c("All" = "", hucs))
+      hucs     <- sort(unique(rv$all_patches$huc))
+      updateSelectInput(session, "filter_cluster", choices = c("All" = "", clusters))
+      updateSelectInput(session, "filter_huc",     choices = c("All" = "", hucs))
     }
   })
 
@@ -348,15 +370,13 @@ server <- function(input, output, session) {
       rv$review_log <- NULL
       return()
     }
-
-    path <- review_log_path()
+    path          <- review_log_path()
     rv$review_log <- load_review_log(path)
 
     # Auto-resume: jump to first unreviewed patch
     if (!is.null(rv$all_patches) && nrow(rv$all_patches) > 0) {
-      reviewed_files <- rv$review_log$patch_file
-      unreviewed_idx <- which(!rv$all_patches$name %in% reviewed_files)
-
+      reviewed_files  <- rv$review_log$patch_file_vector
+      unreviewed_idx  <- which(!rv$all_patches$file_vector %in% reviewed_files)
       if (length(unreviewed_idx) > 0) {
         rv$current_index <- unreviewed_idx[1]
       } else {
@@ -368,65 +388,74 @@ server <- function(input, output, session) {
   # Filter patches when selections change
   observeEvent(list(input$filter_cluster, input$filter_huc), {
     req(rv$all_patches)
-
     filtered <- rv$all_patches
 
     if (!is.null(input$filter_cluster) && input$filter_cluster != "") {
       filtered <- filtered[filtered$cluster == as.integer(input$filter_cluster), ]
     }
-
     if (!is.null(input$filter_huc) && input$filter_huc != "") {
       filtered <- filtered[filtered$huc == input$filter_huc, ]
     }
 
     rv$filtered_patches <- filtered
-    rv$current_index <- 1
+    rv$current_index    <- 1
   }, ignoreInit = TRUE)
 
   # Current patch reactive
   current_patch <- reactive({
     req(rv$filtered_patches, rv$current_index)
-
     if (nrow(rv$filtered_patches) == 0 || rv$current_index > nrow(rv$filtered_patches)) {
       return(NULL)
     }
-
     rv$filtered_patches[rv$current_index, ]
   })
 
-  # Load raster when patch changes
+  # Load raster and vector when patch changes
   observe({
     patch <- current_patch()
     req(patch)
 
-    file_path <- file.path(PATCHES_DIR, patch$file)
+    # Load raster
+    raster_path <- file.path(RASTER_DIR, patch$file_raster)
+    rv$current_raster <- tryCatch(
+      load_patch_raster(raster_path),
+      error = function(e) {
+        showNotification(paste("Error loading raster:", e$message), type = "error")
+        NULL
+      }
+    )
 
-    if (file.exists(file_path)) {
-      rv$current_raster <- tryCatch(
-        load_patch_raster(file_path),
-        error = function(e) {
-          showNotification(paste("Error loading raster:", e$message), type = "error")
-          NULL
-        }
-      )
+    # Load vector
+    vector_path <- file.path(VECTOR_DIR, patch$file_vector)
+    result <- tryCatch(
+      load_patch_vector(vector_path),
+      error = function(e) {
+        showNotification(paste("Error loading vector:", e$message), type = "error")
+        NULL
+      }
+    )
+    if (!is.null(result)) {
+      rv$current_vector_wgs84 <- result$sf_wgs84
+      rv$vector_orig_crs      <- result$orig_crs
     }
+
+    # Reset altered flag on new patch
+    rv$vector_altered <- FALSE
   })
 
-  # Progress text
+  # --- Progress and patch info outputs ---
+
   output$progress_text <- renderText({
     req(rv$all_patches, rv$review_log)
-
-    total <- nrow(rv$all_patches)
+    total    <- nrow(rv$all_patches)
     reviewed <- nrow(rv$review_log)
-
     paste0(reviewed, " / ", total, " reviewed")
   })
 
-  # Patch info outputs
   output$patch_name <- renderText({
     patch <- current_patch()
     if (is.null(patch)) return("No patches found")
-    paste("File:", patch$name)
+    paste("File:", patch$file_vector)
   })
 
   output$patch_cluster <- renderText({
@@ -444,47 +473,67 @@ server <- function(input, output, session) {
   output$patch_status <- renderText({
     patch <- current_patch()
     req(patch, rv$review_log)
-
-    status_row <- rv$review_log[rv$review_log$patch_file == patch$name, ]
-
-    if (nrow(status_row) > 0) {
-      paste("Status:", toupper(status_row$status[1]))
-    } else {
-      "Status: PENDING"
-    }
+    row <- rv$review_log[rv$review_log$patch_file_vector == patch$file_vector, ]
+    if (nrow(row) > 0) "Status: REVIEWED" else "Status: PENDING"
   })
 
-  # Pre-populate comment box when navigating to a reviewed patch
+  # Pre-populate confidence and comment when navigating to a reviewed patch
   observe({
     patch <- current_patch()
     req(patch, rv$review_log)
-
-    existing <- rv$review_log[rv$review_log$patch_file == patch$name, ]
-
-    if (nrow(existing) > 0 && !is.null(existing$comment[1]) && !is.na(existing$comment[1])) {
-      updateTextAreaInput(session, "comment_box", value = existing$comment[1])
+    existing <- rv$review_log[rv$review_log$patch_file_vector == patch$file_vector, ]
+    if (nrow(existing) > 0) {
+      conf_val <- existing$confidence[1]
+      updateSelectInput(session, "confidence",
+                        selected = if (!is.na(conf_val)) as.character(conf_val) else "")
+      updateTextAreaInput(session, "comment_box",
+                          value = if (!is.na(existing$comment[1])) existing$comment[1] else "")
     } else {
+      updateSelectInput(session, "confidence", selected = "")
       updateTextAreaInput(session, "comment_box", value = "")
     }
   })
 
-  # Leaflet map
+  # Enable/disable Submit based on confidence selection
+  observe({
+    if (!is.null(input$confidence) && input$confidence != "") {
+      enable("btn_submit")
+    } else {
+      disable("btn_submit")
+    }
+  })
+
+  # --- Leaflet map ---
+
   output$map <- renderLeaflet({
     leaflet() %>%
       addProviderTiles(providers$Esri.WorldImagery) %>%
-      setView(lng = -85, lat = 45, zoom = 5)
+      setView(lng = -76, lat = 43, zoom = 8) %>%
+      addPmToolbar(
+        toolbarOptions = pmToolbarOptions(
+          drawMarker      = FALSE,
+          drawPolyline    = FALSE,
+          drawCircle      = FALSE,
+          drawCircleMarker = FALSE,
+          drawRectangle   = FALSE,
+          drawPolygon     = TRUE,
+          editMode        = TRUE,
+          dragMode        = TRUE,
+          cutPolygon      = FALSE,
+          removalMode     = TRUE
+        )
+      )
   })
 
-  # Switch basemap when selection changes
+  # Switch basemap
   observeEvent(input$basemap, {
     proxy <- leafletProxy("map") %>% clearTiles()
-
     if (input$basemap == "ESRI World Imagery") {
       proxy %>% addProviderTiles(providers$Esri.WorldImagery)
     } else if (input$basemap == "NYS Hillshade") {
       proxy %>% addWMSTiles(
         baseUrl = "https://elevation.its.ny.gov/arcgis/services/NYS_Statewide_Hillshade/MapServer/WMSServer",
-        layers = "0,1,2",
+        layers  = "0,1,2",
         options = WMSTileOptions(format = "image/png", transparent = FALSE),
         attribution = "NYS ITS GIS"
       )
@@ -496,68 +545,61 @@ server <- function(input, output, session) {
     }
   }, ignoreInit = TRUE)
 
-  # Update map when raster changes, overlay toggled, opacity adjusted, or basemap switched
+  # Update map when patch data, overlay settings, or basemap changes
   observe({
-    raster_data <- rv$current_raster
-    show_overlay <- input$show_overlay
-    opacity <- input$overlay_opacity
-    basemap <- input$basemap  # re-render overlay after basemap switch
+    raster_data  <- rv$current_raster
+    vector_data  <- rv$current_vector_wgs84
+    show_raster  <- input$show_raster
+    show_vector  <- input$show_vector
+    opacity      <- input$overlay_opacity
+    input$basemap  # trigger on basemap switch
 
-    req(raster_data)
+    req(vector_data)
 
-    # Get raster extent for map bounds
-    raster_ext <- ext(raster_data)
-    bounds <- c(
-      xmin(raster_ext),
-      xmax(raster_ext),
-      ymin(raster_ext),
-      ymax(raster_ext)
-    )
+    # Get bounds from vector for fitBounds
+    bbox <- st_bbox(vector_data)
 
-    # Convert to matrix for leaflet
-    vals <- values(raster_data, mat = TRUE)
-
-    # Create color mapping
-    unique_vals <- sort(unique(vals[!is.na(vals)]))
-
-    # Build color palette
-    pal <- colorFactor(
-      palette = unname(CLASS_COLORS[as.character(unique_vals)]),
-      domain = unique_vals,
-      na.color = "transparent"
-    )
-
-    leafletProxy("map") %>%
+    proxy <- leafletProxy("map") %>%
       clearImages() %>%
-      clearShapes() %>%
+      clearGroup("raster_overlay") %>%
+      clearGroup("vector_layer") %>%
       fitBounds(
-        lng1 = bounds[1],
-        lat1 = bounds[3],
-        lng2 = bounds[2],
-        lat2 = bounds[4]
-      ) %>%
-      addRectangles(
-        lng1 = bounds[1],
-        lat1 = bounds[3],
-        lng2 = bounds[2],
-        lat2 = bounds[4],
-        color = "#FF0000",
-        weight = 2,
-        fillOpacity = 0
+        lng1 = as.numeric(bbox["xmin"]),
+        lat1 = as.numeric(bbox["ymin"]),
+        lng2 = as.numeric(bbox["xmax"]),
+        lat2 = as.numeric(bbox["ymax"])
       )
 
-    if (show_overlay) {
-      leafletProxy("map") %>%
-        addRasterImage(
-          raster_data,
-          colors = pal,
-          opacity = opacity,
-          project = FALSE
-        )
+    # Raster overlay
+    if (show_raster && !is.null(raster_data)) {
+      vals         <- values(raster_data, mat = TRUE)
+      unique_vals  <- sort(unique(vals[!is.na(vals)]))
+      pal          <- colorFactor(
+        palette  = unname(CLASS_COLORS[as.character(unique_vals)]),
+        domain   = unique_vals,
+        na.color = "transparent"
+      )
+      proxy <- proxy %>%
+        addRasterImage(raster_data, colors = pal, opacity = opacity,
+                       project = FALSE, group = "raster_overlay")
+    }
+
+    # Vector overlay (editable via leafpm)
+    if (show_vector) {
+      proxy <- proxy %>%
+        addFeatures(data = vector_data, group = "vector_layer",
+                    style = list(color = "#FF4500", weight = 2, fillOpacity = 0.2))
     }
   })
 
-  # Navigation: Previous
+  # --- PM edit event tracking ---
+
+  observeEvent(input$map_pm_draw_new_feature, { rv$vector_altered <- TRUE })
+  observeEvent(input$map_pm_edit_feature,     { rv$vector_altered <- TRUE })
+  observeEvent(input$map_pm_remove_feature,   { rv$vector_altered <- TRUE })
+
+  # --- Navigation ---
+
   observeEvent(input$btn_prev, {
     if (rv$current_index > 1) {
       rv$current_index <- rv$current_index - 1
@@ -566,7 +608,6 @@ server <- function(input, output, session) {
     }
   })
 
-  # Navigation: Next
   observeEvent(input$btn_next, {
     if (rv$current_index < nrow(rv$filtered_patches)) {
       rv$current_index <- rv$current_index + 1
@@ -575,21 +616,16 @@ server <- function(input, output, session) {
     }
   })
 
-  # Navigation: Jump to next unreviewed
   observeEvent(input$btn_next_unreviewed, {
     req(rv$filtered_patches, rv$review_log)
-
-    reviewed_files <- rv$review_log$patch_file
-    unreviewed_idx <- which(!rv$filtered_patches$name %in% reviewed_files)
+    reviewed_files <- rv$review_log$patch_file_vector
+    unreviewed_idx <- which(!rv$filtered_patches$file_vector %in% reviewed_files)
 
     if (length(unreviewed_idx) > 0) {
-      # Find next unreviewed from current position
-      future_unreviewed <- unreviewed_idx[unreviewed_idx > rv$current_index]
-
-      if (length(future_unreviewed) > 0) {
-        rv$current_index <- future_unreviewed[1]
+      future <- unreviewed_idx[unreviewed_idx > rv$current_index]
+      if (length(future) > 0) {
+        rv$current_index <- future[1]
       } else {
-        # Wrap around to beginning
         rv$current_index <- unreviewed_idx[1]
         showNotification("Wrapped to beginning", type = "message")
       }
@@ -598,76 +634,88 @@ server <- function(input, output, session) {
     }
   })
 
-  # Mark as Valid
-  observeEvent(input$btn_valid, {
-    patch <- current_patch()
-    req(patch)
+  # --- Submit: step 1 — trigger JS to collect current PM layer features ---
 
-    log_review(patch, "valid")
-  })
-
-  # Mark as Uncertain
-  observeEvent(input$btn_uncertain, {
-    patch <- current_patch()
-    req(patch)
-
-    log_review(patch, "uncertain")
-  })
-
-  # Mark as Invalid
-  observeEvent(input$btn_invalid, {
-    patch <- current_patch()
-    req(patch)
-
-    log_review(patch, "invalid")
-  })
-
-  # Helper function to log review
-  log_review <- function(patch, status) {
-    # Require reviewer name
+  observeEvent(input$btn_submit, {
     if (nchar(trimws(input$reviewer_name)) == 0) {
-      showNotification("Please enter your name before reviewing.", type = "error")
+      showNotification("Please enter your name before submitting.", type = "error")
       return()
     }
+    req(input$confidence != "")
+    session$sendCustomMessage("getFinalFeatures", list())
+  })
 
-    # Check if already reviewed
-    existing_idx <- which(rv$review_log$patch_file == patch$name)
+  # --- Submit: step 2 — receive GeoJSON from JS, log review, save if altered ---
+
+  observeEvent(input$final_vector_geojson, {
+    patch <- current_patch()
+    req(patch)
+    if (is.null(input$confidence) || input$confidence == "") return()
+
+    altered <- rv$vector_altered
+
+    if (altered) {
+      geojson_str <- input$final_vector_geojson
+      edited_sf_wgs84 <- tryCatch(
+        st_read(dsn = geojson_str, quiet = TRUE),
+        error = function(e) {
+          showNotification(paste("Error reading edited geometry:", e$message), type = "error")
+          NULL
+        }
+      )
+
+      if (!is.null(edited_sf_wgs84) && nrow(edited_sf_wgs84) > 0) {
+        edited_sf_orig <- st_transform(edited_sf_wgs84, rv$vector_orig_crs)
+        out_path       <- file.path(ALTERED_VECTOR_DIR, patch$file_vector)
+        dir.create(ALTERED_VECTOR_DIR, showWarnings = FALSE, recursive = TRUE)
+        tryCatch(
+          st_write(edited_sf_orig, out_path, delete_layer = TRUE, quiet = TRUE),
+          error = function(e) {
+            showNotification(paste("Error saving altered vector:", e$message), type = "error")
+          }
+        )
+      }
+    }
 
     new_entry <- data.frame(
-      patch_file = patch$name,
-      cluster = patch$cluster,
-      huc = patch$huc,
-      patch_num = patch$patch_num,
-      status = status,
-      comment = input$comment_box,
-      reviewer = trimws(input$reviewer_name),
-      timestamp = format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
-      stringsAsFactors = FALSE
+      patch_file_vector = patch$file_vector,
+      cluster           = patch$cluster,
+      huc               = patch$huc,
+      patch_num         = patch$patch_num,
+      status            = "reviewed",
+      altered           = altered,
+      confidence        = as.integer(input$confidence),
+      comment           = input$comment_box,
+      reviewer          = trimws(input$reviewer_name),
+      timestamp         = format(Sys.time(), "%Y-%m-%d %H:%M:%S"),
+      stringsAsFactors  = FALSE
     )
 
+    existing_idx <- which(rv$review_log$patch_file_vector == patch$file_vector)
     if (length(existing_idx) > 0) {
-      # Update existing entry
       rv$review_log[existing_idx, ] <- new_entry
     } else {
-      # Add new entry
       rv$review_log <- rbind(rv$review_log, new_entry)
     }
 
-    # Auto-save
     save_review_log(rv$review_log, review_log_path())
 
-    showNotification(paste("Marked as", toupper(status)), type = "message", duration = 2)
+    msg <- paste0("Submitted \u2014 confidence: ", input$confidence,
+                  if (altered) " | vector altered & saved" else "")
+    showNotification(msg, type = "message", duration = 3)
 
-    # Clear comment box
+    # Reset and advance
+    updateSelectInput(session, "confidence", selected = "")
     updateTextAreaInput(session, "comment_box", value = "")
+    rv$vector_altered <- FALSE
 
-    # Auto-advance to next patch
     if (rv$current_index < nrow(rv$filtered_patches)) {
       rv$current_index <- rv$current_index + 1
     }
-  }
+  })
 
-  # Export CSV download
+  # --- Export CSV ---
+
   output$export_csv <- downloadHandler(
     filename = function() {
       reviewer <- gsub("[^A-Za-z0-9_-]", "_", trimws(input$reviewer_name))
