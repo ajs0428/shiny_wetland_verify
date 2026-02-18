@@ -511,16 +511,14 @@ server <- function(input, output, session) {
       setView(lng = -76, lat = 43, zoom = 8) %>%
       addPmToolbar(
         toolbarOptions = pmToolbarOptions(
-          drawMarker      = FALSE,
-          drawPolyline    = FALSE,
-          drawCircle      = FALSE,
-          drawCircleMarker = FALSE,
-          drawRectangle   = FALSE,
-          drawPolygon     = TRUE,
-          editMode        = TRUE,
-          dragMode        = TRUE,
-          cutPolygon      = FALSE,
-          removalMode     = TRUE
+          drawMarker    = FALSE,
+          drawPolyline  = FALSE,
+          drawCircle    = FALSE,
+          drawRectangle = FALSE,
+          drawPolygon   = TRUE,
+          editMode      = TRUE,
+          cutPolygon    = FALSE,
+          removalMode   = TRUE
         )
       )
   })
@@ -563,6 +561,7 @@ server <- function(input, output, session) {
       clearImages() %>%
       clearGroup("raster_overlay") %>%
       clearGroup("vector_layer") %>%
+      clearGroup("bbox_layer") %>%
       fitBounds(
         lng1 = as.numeric(bbox["xmin"]),
         lat1 = as.numeric(bbox["ymin"]),
@@ -587,9 +586,22 @@ server <- function(input, output, session) {
     # Vector overlay (editable via leafpm)
     if (show_vector) {
       proxy <- proxy %>%
-        addFeatures(data = vector_data, group = "vector_layer",
-                    style = list(color = "#FF4500", weight = 2, fillOpacity = 0.2))
+        addPolygons(data = vector_data, group = "vector_layer",
+                    color = "#FF4500", weight = 2, fillOpacity = 0.2)
     }
+
+    # Bounding box
+    proxy <- proxy %>%
+      addRectangles(
+        lng1 = as.numeric(bbox["xmin"]),
+        lat1 = as.numeric(bbox["ymin"]),
+        lng2 = as.numeric(bbox["xmax"]),
+        lat2 = as.numeric(bbox["ymax"]),
+        group  = "bbox_layer",
+        color  = "#FFFF00",
+        weight = 2,
+        fill   = FALSE
+      )
   })
 
   # --- PM edit event tracking ---
